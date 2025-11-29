@@ -6,6 +6,7 @@ import logging
 from typing import Optional
 from config import config
 from advanced_quiz_solver import AdvancedQuizSolver as QuizSolver
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -78,41 +79,109 @@ async def handle_quiz(request: Request):
         )
 
 async def solve_quiz_chain(initial_url: str):
-    """Solve a chain of quiz questions"""
+    """Solve a chain of quiz questions with intelligent retry using code execution"""
     solver = QuizSolver()
     current_url = initial_url
     question_number = 1
     
+    QUESTION_TIMEOUT = 160
+    MAX_RETRIES_PER_QUESTION = 6  # First try: direct/auto, Second try: forced code execution
+
     try:
         while current_url:
-            logger.info(f"Solving question {question_number}: {current_url}")
+            logger.info(f"\n{'='*80}")
+            logger.info(f"QUESTION {question_number}: {current_url}")
+            logger.info(f"{'='*80}\n")
+
+            question_start_time = time.time()
+            retry_count = 0
+            question_solved = False
             
-            result = await solver.solve_quiz(current_url)
+            while retry_count < MAX_RETRIES_PER_QUESTION and not question_solved:
+                retry_count += 1
+                force_code = (retry_count > 1)  # Force code execution on retry
+                
+                if force_code:
+                    logger.info(f"\n{'*'*80}")
+                    logger.info(f"RETRY ATTEMPT {retry_count}: Using FORCED CODE EXECUTION")
+                    logger.info(f"{'*'*80}\n")
+                else:
+                    logger.info(f"Attempt {retry_count}: Using automatic strategy detection")
+                
+                # Solve the question
+                result = await solver.solve_quiz(current_url, force_code_execution=force_code)
+                
+                elapsed = time.time() - question_start_time
+                
+                if result.get("correct"):
+                    logger.info(f"\n{'✓'*80}")
+                    logger.info(f"✓ Question {question_number} SOLVED in {elapsed:.1f}s (attempt {retry_count})")
+                    logger.info(f"{'✓'*80}\n")
+                    
+                    question_solved = True
+                    current_url = result.get("url")
+                    
+                    if current_url:
+                        logger.info(f"→ Moving to next question: {current_url}")
+                        question_number += 1
+                    else:
+                        logger.info(f"\n{'🎉'*40}")
+                        logger.info("🎉 QUIZ COMPLETED SUCCESSFULLY! 🎉")
+                        logger.info(f"{'🎉'*40}\n")
+                        break
+                else:
+                    reason = result.get('reason', 'Unknown error')
+                    logger.warning(f"\n{'✗'*80}")
+                    logger.warning(f"✗ Question {question_number} attempt {retry_count} FAILED: {reason}")
+                    logger.warning(f"{'✗'*80}\n")
+                    
+                    # Check if timeout exceeded
+                    if elapsed >= QUESTION_TIMEOUT:
+                        logger.error(f"⏱ Timeout reached for question {question_number} ({elapsed:.1f}s)")
+                        logger.error(f"Skipping to next question if available...")
+                        
+                        # Try to get next URL from result
+                        next_url = result.get("url")
+                        if next_url and next_url != current_url:
+                            logger.info(f"→ Found next URL, moving on: {next_url}")
+                            current_url = next_url
+                            question_number += 1
+                            break
+                        else:
+                            logger.error("No next URL available, stopping.")
+                            return
+                    
+                    # Check if we should retry
+                    if retry_count < MAX_RETRIES_PER_QUESTION:
+                        logger.info(f"⟳ Preparing retry {retry_count + 1}/{MAX_RETRIES_PER_QUESTION}...")
+                        await asyncio.sleep(2)  # Small delay before retry
+                    else:
+                        logger.error(f"Max retries ({MAX_RETRIES_PER_QUESTION}) reached for question {question_number}")
+                        
+                        # Check if server provided a next URL despite wrong answer
+                        next_url = result.get("url")
+                        if next_url and next_url != current_url:
+                            logger.info(f"→ Server provided next URL, moving on: {next_url}")
+                            current_url = next_url
+                            question_number += 1
+                            break
+                        else:
+                            logger.error("Stopping quiz chain - no way to proceed")
+                            return
             
-            if result.get("correct"):
-                logger.info(f"Question {question_number} answered correctly!")
-                current_url = result.get("url")
-                if current_url:
-                    logger.info(f"Moving to next question: {current_url}")
-                    question_number += 1
-                else:
-                    logger.info("Quiz completed successfully!")
-                    break
-            else:
-                logger.warning(f"Question {question_number} answered incorrectly: {result.get('reason')}")
-                # Check if we can skip to next question
-                next_url = result.get("url")
-                if next_url and next_url != current_url:
-                    logger.info(f"Skipping to next question: {next_url}")
-                    current_url = next_url
-                    question_number += 1
-                else:
-                    # Retry current question if within time limit
-                    logger.info("Retrying current question...")
-                    await asyncio.sleep(1)  # Small delay before retry
+            # Check if we solved the question
+            if not question_solved:
+                logger.error(f"Failed to solve question {question_number} after {MAX_RETRIES_PER_QUESTION} attempts")
+                # The logic above already handles moving to next question or stopping
                     
     except Exception as e:
-        logger.error(f"Error in quiz chain: {e}", exc_info=True)
+        logger.error(f"❌ Critical error in quiz chain: {e}", exc_info=True)
+    finally:
+        # Cleanup
+        await solver.close()
+        logger.info("\n" + "="*80)
+        logger.info("Quiz solver cleanup completed")
+        logger.info("="*80)
 
 @app.get("/health")
 async def health_check():
@@ -124,7 +193,13 @@ async def root():
     """Root endpoint with API information"""
     return {
         "service": "LLM Analysis Quiz Solver",
-        "version": "1.0",
+        "version": "2.0",
+        "features": [
+            "Automatic strategy detection",
+            "Code execution fallback on failure",
+            "Intelligent retry mechanism",
+            "Image and file processing"
+        ],
         "endpoints": {
             "POST /": "Submit quiz task",
             "GET /health": "Health check",
@@ -141,6 +216,7 @@ if __name__ == "__main__":
     logger.info(f"Starting server on {config.HOST}:{config.PORT}")
     logger.info(f"Email: {config.EMAIL}")
     logger.info(f"Timeout: {config.TIMEOUT_SECONDS} seconds")
+    logger.info(f"Max retries per question: 2 (auto + forced code)")
     
     uvicorn.run(
         "main:app",
