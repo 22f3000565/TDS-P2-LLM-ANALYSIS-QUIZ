@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+playwright
+httpx
+python-dotenv
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+PyPDF2
+openpyxl
+requests
+flask
