@@ -23,10 +23,30 @@ class AdvancedQuizSolver:
         self.code_executor = CodeExecutor()
         self.http_client = httpx.AsyncClient(timeout=60.0)
         self.downloaded_files = {}
+        self.attempt_history = {}  # Track attempts per URL
     
-    async def solve_quiz(self, quiz_url: str) -> Dict[str, Any]:
-        """Solve a single quiz question with enhanced capabilities"""
+    async def solve_quiz(self, quiz_url: str, force_code_execution: bool = False) -> Dict[str, Any]:
+        """
+        Solve a single quiz question with enhanced capabilities
+        
+        Args:
+            quiz_url: URL of the quiz question
+            force_code_execution: If True, skip direct solving and go straight to code execution
+        """
         try:
+            # Initialize attempt tracking for this URL
+            if quiz_url not in self.attempt_history:
+                self.attempt_history[quiz_url] = {
+                    'attempts': 0,
+                    'methods_tried': []
+                }
+            
+            self.attempt_history[quiz_url]['attempts'] += 1
+            current_attempt = self.attempt_history[quiz_url]['attempts']
+            
+            logger.info(f"Solving quiz (attempt {current_attempt}): {quiz_url}")
+            logger.info(f"Force code execution: {force_code_execution}")
+            
             # Fetch and parse the quiz page (now includes images)
             quiz_content, images = await self.fetch_quiz_page(quiz_url)
             
@@ -73,49 +93,80 @@ class AdvancedQuizSolver:
             for idx, img_data in enumerate(images):
                 file_data[f"image_{idx}"] = img_data
             
-            # Determine solution strategy
-            strategy, code = await self.llm_client.get_solution_strategy(
-                quiz_content, 
-                file_data
-            )
-            
-            logger.info(f"Solution strategy: {strategy}")
-            
             answer = None
             
-            if strategy == "code_execution" and code:
-                # Execute code to get answer
-                logger.info("Executing generated code...")
-                print("\n" + "="*60)
-                print("GENERATED CODE:")
-                print("="*60)
-                print(code)
-                print("="*60 + "\n")
+            # Determine which method to use
+            if force_code_execution:
+                # Force code execution (retry scenario)
+                logger.info("FORCED CODE EXECUTION MODE (retry after failed direct solve)")
+                self.attempt_history[quiz_url]['methods_tried'].append('code_execution')
                 
-                success, result, error = await self.code_executor.execute_code(
-                    code, 
+                # Generate code solution
+                code = await self.llm_client.generate_code_solution(quiz_content, file_data)
+                
+                if code:
+                    logger.info("Executing generated code...")
+                    print("\n" + "="*60)
+                    print("GENERATED CODE (RETRY ATTEMPT):")
+                    print("="*60)
+                    print(code)
+                    print("="*60 + "\n")
+                    
+                    success, result, error = await self.code_executor.execute_code(code, file_data)
+                    
+                    if success:
+                        answer = result
+                        logger.info(f"Code execution successful. Result: {type(answer)}")
+                    else:
+                        logger.error(f"Code execution failed: {error}")
+                        return {"correct": False, "reason": f"Code execution failed: {error}"}
+                else:
+                    logger.error("Failed to generate code")
+                    return {"correct": False, "reason": "Failed to generate code"}
+            
+            else:
+                # Normal flow: determine strategy automatically
+                strategy, code = await self.llm_client.get_solution_strategy(
+                    quiz_content, 
                     file_data
                 )
                 
-                if success:
-                    answer = result
-                    logger.info(f"Code execution successful. Result: {type(answer)}")
+                logger.info(f"Solution strategy: {strategy}")
+                self.attempt_history[quiz_url]['methods_tried'].append(strategy)
+                
+                if strategy == "code_execution" and code:
+                    # Execute code to get answer
+                    logger.info("Executing generated code...")
+                    print("\n" + "="*60)
+                    print("GENERATED CODE:")
+                    print("="*60)
+                    print(code)
+                    print("="*60 + "\n")
+                    
+                    success, result, error = await self.code_executor.execute_code(
+                        code, 
+                        file_data
+                    )
+                    
+                    if success:
+                        answer = result
+                        logger.info(f"Code execution successful. Result: {type(answer)}")
+                    else:
+                        logger.error(f"Code execution failed: {error}")
+                        # Fall back to direct solving
+                        logger.info("Falling back to direct solving...")
+                        answer = await self.solve_with_context(
+                            quiz_content, 
+                            quiz_url, 
+                            file_data
+                        )
                 else:
-                    logger.error(f"Code execution failed: {error}")
-                    # Fall back to direct solving
-                    logger.info("Falling back to direct solving...")
+                    # Solve directly using LLM
                     answer = await self.solve_with_context(
                         quiz_content, 
                         quiz_url, 
                         file_data
                     )
-            else:
-                # Solve directly using LLM
-                answer = await self.solve_with_context(
-                    quiz_content, 
-                    quiz_url, 
-                    file_data
-                )
             
             if answer is None:
                 logger.error("Failed to generate answer")
