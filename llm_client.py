@@ -231,24 +231,31 @@ class LLMClient:
         
         prompt_parts.extend([
             "REQUIREMENTS:",
-            "1. Write complete, executable Python code",
-            "2. Import all necessary libraries (pandas, numpy, matplotlib, sklearn, etc.)",
-            "3. Read data files from current directory using their filenames",
-            "4. Store the final answer in a variable called 'answer'",
-            "5. For visualizations:",
-            "   - Create the plot/chart",
-            "   - Save to a file (e.g., plt.savefig('output.png'))",
-            "   - Use high DPI for quality (dpi=300)",
-            "6. For CSV output:",
-            "   - Save to a file (e.g., df.to_csv('output.csv', index=False))",
-            "7. Handle errors gracefully",
-            "8. Include comments explaining key steps",
-            "",
-            "OUTPUT FORMAT:",
-            "Provide ONLY the Python code in a code block:",
-            "```python",
-            "# Your code here",
-            "```"
+        "1. Write complete, executable Python code",
+        "2. Import all necessary libraries (pandas, numpy, matplotlib, sklearn, librosa for audio, etc.)",
+        "3. Read data files from current directory using their filenames",
+        "4. For audio files, use libraries like:",
+        "   - librosa: for audio processing and feature extraction",
+        "   - wave: for basic WAV file operations",
+        "   - pydub: for audio format conversions",
+        "   - speech_recognition: for speech-to-text",
+        "5. Store the final answer in a variable called 'answer'",
+        "6. For visualizations:",
+        "   - Create the plot/chart",
+        "   - Save to a file (e.g., plt.savefig('output.png'))",
+        "   - Use high DPI for quality (dpi=300)",
+        "7. For CSV output:",
+        "   - Save to a file (e.g., df.to_csv('output.csv', index=False))",
+        "8. For audio output:",
+        "   - Save processed audio (e.g., scipy.io.wavfile.write('output.wav', rate, data))",
+        "9. Handle errors gracefully",
+        "10. Include comments explaining key steps",
+        "",
+        "OUTPUT FORMAT:",
+        "Provide ONLY the Python code in a code block:",
+        "```python",
+        "# Your code here",
+        "```"
         ])
         
         return "\n".join(prompt_parts)
@@ -264,7 +271,8 @@ class LLMClient:
             'csv': 'data.csv',
             'json': 'data.json',
             'excel': 'data.xlsx',
-            'pdf': 'data.txt'  # PDF is saved as text
+            'pdf': 'data.txt',  # PDF is saved as text
+            'audio': 'audio.wav'
         }
         
         return extensions.get(file_type, 'data.dat')
@@ -315,18 +323,46 @@ class LLMClient:
             content = response["choices"][0]["message"]["content"]
             logger.info(f"LLM response: {content}")
             
-            # Try to parse as JSON first
-            try:
-                json_match = re.search(r'\{.*\}|\[.*\]', content, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+            # Clean up the content - remove common prefixes/suffixes
+            content = content.strip()
             
-            # Try to extract number
-            number_match = re.search(r'-?\d+\.?\d*', content)
-            if number_match:
-                num_str = number_match.group()
+            # Remove common wrapper phrases
+            prefixes_to_remove = [
+                "FINAL ANSWER:",
+                "Answer:",
+                "The answer is:",
+                "Result:",
+            ]
+            for prefix in prefixes_to_remove:
+                if content.startswith(prefix):
+                    content = content[len(prefix):].strip()
+            
+            # Check if it looks like a command string (starts with command keywords)
+            command_keywords = ['uv ', 'git ', 'curl ', 'wget ', 'python ', 'node ']
+            if any(content.startswith(kw) for kw in command_keywords):
+                logger.info("Detected command string, returning as-is")
+                return content
+            
+            # Check if it's a multi-line command (like git commands)
+            if '\n' in content and any(kw in content for kw in ['git ', 'uv ', 'curl ']):
+                logger.info("Detected multi-line command, returning as-is")
+                return content
+            
+            # Try to parse as JSON (for structured data)
+            if content.startswith('{') or content.startswith('['):
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Check for data URIs (images)
+            if content.startswith('data:'):
+                logger.info("Detected data URI, returning as-is")
+                return content
+            
+            # Try to extract number ONLY if the entire response is numeric
+            if re.match(r'^-?\d+\.?\d*$', content.strip()):
+                num_str = content.strip()
                 if '.' in num_str:
                     return float(num_str)
                 return int(num_str)
@@ -338,8 +374,8 @@ class LLMClient:
             if content_lower in ['false', 'no']:
                 return False
             
-            # Return as string, cleaned up
-            return content.strip()
+            # Return as string - this preserves command strings, URLs, etc.
+            return content
             
         except Exception as e:
             logger.error(f"Error extracting answer: {e}")
