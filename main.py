@@ -77,52 +77,6 @@ async def handle_quiz(request: Request):
             status_code=500,
             content={"status": "error", "message": str(e)}
         )
-    
-async def get_manual_answer(current_quiz_url: str) -> tuple[Optional[str], Optional[str]]:
-    """
-    Prompt user for manual answer input in terminal
-    
-    Args:
-        current_quiz_url: The current quiz page URL (for reference)
-    
-    Returns:
-        Tuple[answer, quiz_page_url] - quiz_page_url is for the JSON payload's 'url' field
-    """
-    print("\n" + "="*80)
-    print("MANUAL ANSWER INPUT REQUIRED")
-    print("="*80)
-    print("All automatic attempts have failed.")
-    print("You can manually provide the answer, or press Enter to skip.")
-    print("-"*80)
-    print(f"Current quiz URL: {current_quiz_url}")
-    print("-"*80)
-    
-    try:
-        # Get answer
-        answer_input = input("Enter the correct answer (or press Enter to skip): ").strip()
-        
-        if not answer_input:
-            print("Skipping manual input...")
-            return None, None
-        
-        # Get quiz page URL for JSON payload
-        print("\nEnter the quiz page URL to submit with the answer.")
-        print("(This is the 'url' field in the JSON payload)")
-        quiz_url_input = input(f"Quiz page URL [default: {current_quiz_url}]: ").strip()
-        
-        if not quiz_url_input:
-            quiz_url_input = current_quiz_url  # Use current URL as default
-        
-        print("-"*80)
-        print(f"Manual answer provided: {answer_input[:100]}{'...' if len(answer_input) > 100 else ''}")
-        print(f"Quiz page URL for submission: {quiz_url_input}")
-        print("="*80 + "\n")
-        
-        return answer_input, quiz_url_input
-        
-    except Exception as e:
-        logger.error(f"Error getting manual input: {e}")
-        return None, None
 
 async def solve_quiz_chain(initial_url: str):
     """Solve a chain of quiz questions with intelligent retry using code execution"""
@@ -146,7 +100,7 @@ async def solve_quiz_chain(initial_url: str):
             
             while retry_count < MAX_RETRIES_PER_QUESTION and not question_solved:
                 retry_count += 1
-                force_code = (retry_count == 1)  # Force code execution on second try only
+                force_code = (retry_count == 2)  # Force code execution on second try only
                 
                 if force_code:
                     logger.info(f"\n{'*'*80}")
@@ -206,62 +160,18 @@ async def solve_quiz_chain(initial_url: str):
                         logger.info(f"⟳ Preparing retry {retry_count + 1}/{MAX_RETRIES_PER_QUESTION}...")
                         await asyncio.sleep(2)  # Small delay before retry
                     else:
-                        # MODIFIED: All retries exhausted - ask for manual input
                         logger.error(f"Max retries ({MAX_RETRIES_PER_QUESTION}) reached for question {question_number}")
                         
-                        # Ask user for manual answer and quiz page URL
-                        manual_answer, manual_quiz_url = await get_manual_answer(current_url)
-                        
-                        if manual_answer:
-                            # Submit the manual answer with the provided quiz page URL
-                            logger.info("Submitting manually provided answer...")
-                            logger.info(f"Using quiz page URL: {manual_quiz_url}")
-                            submit_url = "https://tds-llm-analysis.s-anand.net/submit"
-                            manual_result = await solver.submit_answer(submit_url, manual_quiz_url, manual_answer)
-                            
-                            if manual_result.get("correct"):
-                                logger.info(f"\n{'✓'*80}")
-                                logger.info(f"✓ Question {question_number} SOLVED with manual answer!")
-                                logger.info(f"{'✓'*80}\n")
-                                
-                                question_solved = True
-                                # Use next URL from server response
-                                current_url = manual_result.get("url")
-                                
-                                if current_url:
-                                    logger.info(f"→ Moving to next question: {current_url}")
-                                    question_number += 1
-                                else:
-                                    logger.info(f"\n{'🎉'*40}")
-                                    logger.info("🎉 QUIZ COMPLETED SUCCESSFULLY! 🎉")
-                                    logger.info(f"{'🎉'*40}\n")
-                                    break
-                            else:
-                                logger.warning("Manual answer was also incorrect!")
-                                # Check if server provided next URL anyway (difficulty 1)
-                                if manual_result.get("url"):
-                                    logger.info(f"→ Server provided next URL despite wrong answer: {manual_result.get('url')}")
-                                    current_url = manual_result.get("url")
-                                    question_number += 1
-                                    break
-                                elif last_next_url and last_next_url != current_url:
-                                    logger.info(f"→ Using last known next URL: {last_next_url}")
-                                    current_url = last_next_url
-                                    question_number += 1
-                                    break
-                                else:
-                                    logger.error("No next URL available, stopping.")
-                                    return
+                        # Even if we failed, if server gave us next URL, continue
+                        # (Question says difficulty 1 reveals next URL even if wrong)
+                        if last_next_url and last_next_url != current_url:
+                            logger.info(f"→ Continuing with next URL (Difficulty 1 allows this): {last_next_url}")
+                            current_url = last_next_url
+                            question_number += 1
+                            break
                         else:
-                            # User skipped manual input
-                            if last_next_url and last_next_url != current_url:
-                                logger.info(f"→ Continuing with next URL (Difficulty 1 allows this): {last_next_url}")
-                                current_url = last_next_url
-                                question_number += 1
-                                break
-                            else:
-                                logger.error("No next URL provided, stopping quiz chain")
-                                return
+                            logger.error("No next URL provided, stopping quiz chain")
+                            return
             
             # If we exhausted retries without solving
             if not question_solved and last_next_url and last_next_url != current_url:
