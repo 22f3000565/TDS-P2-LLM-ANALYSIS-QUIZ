@@ -170,6 +170,19 @@ print("__QUIZ_RESULT_END__")
                         with open(filepath, 'wb') as f:
                             f.write(img_bytes)
                         logger.info(f"Saved image file: {filename}")
+
+                # ADDED: Audio file handling
+                elif file_type == 'audio':
+                    # Save audio from base64 data URI
+                    data_uri = data.get('data', '')
+                    if data_uri.startswith('data:'):
+                        # Extract base64 data
+                        header, b64_data = data_uri.split(',', 1)
+                        audio_bytes = base64.b64decode(b64_data)
+                        
+                        with open(filepath, 'wb') as f:
+                            f.write(audio_bytes)
+                        logger.info(f"Saved audio file: {filename}")
                     
             except Exception as e:
                 logger.error(f"Error saving file {filename}: {e}")
@@ -194,7 +207,8 @@ print("__QUIZ_RESULT_END__")
             'excel': '.xlsx',
             'pdf': '.pdf',
             'text': '.txt',
-            'image': '.png'
+            'image': '.png',
+            'audio': '.wav'
         }
         
         ext = extensions.get(file_type, '.dat')
